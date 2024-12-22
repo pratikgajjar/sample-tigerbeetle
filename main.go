@@ -24,41 +24,117 @@ func main() {
 		log.Printf("Error creating client: %s", err)
 		return
 	}
+	// https://docs.tigerbeetle.com/coding/recipes/balance-bounds
 
-	// account0 := Account{
-	// 	ID:     ToUint128(100),
-	// 	Ledger: 1,
-	// 	Code:   718,
-	// 	Flags: AccountFlags{
-	// 		DebitsMustNotExceedCredits: true,
-	// 		Linked:                     true,
-	// 	}.ToUint16(),
-	// }
-	// account1 := Account{
-	// 	ID:     ToUint128(101),
-	// 	Ledger: 1,
-	// 	Code:   718,
-	// 	Flags: AccountFlags{
-	// 		History: true,
-	// 	}.ToUint16(),
-	// }
-	// accountErrors, err := client.CreateAccounts([]Account{account0, account1})
-	// log.Println(accountErrors)
+	destAcID := ToUint128(100)
+	sourceAcID := ToUint128(101)
+
+	operatorAcId := ToUint128(900)
+	controlAcId := ToUint128(901)
+
+	limitAmount := ToUint128(5000)
+	controlLedger := 1
+	dummyTransferCode := 420
+
+	account0 := Account{
+		ID:     destAcID,
+		Ledger: 1,
+		Code:   718,
+		Flags: AccountFlags{
+			DebitsMustNotExceedCredits: true,
+		}.ToUint16(),
+	}
+	account1 := Account{
+		ID:     sourceAcID,
+		Ledger: 1,
+		Code:   718,
+		Flags: AccountFlags{
+			CreditsMustNotExceedDebits: true,
+		}.ToUint16(),
+	}
+
+	accountErrors, err := client.CreateAccounts([]Account{
+		account0,
+		account1,
+		{
+			ID:     operatorAcId,
+			Ledger: uint32(controlLedger),
+			Code:   uint16(dummyTransferCode),
+			Flags: AccountFlags{
+				DebitsMustNotExceedCredits: true,
+			}.ToUint16(),
+		},
+		{
+			ID:     controlAcId,
+			Ledger: uint32(controlLedger),
+			Code:   uint16(dummyTransferCode),
+			Flags: AccountFlags{
+				CreditsMustNotExceedDebits: true,
+			}.ToUint16(),
+		},
+	})
+	log.Println(accountErrors)
 
 	curTid := ID()
-	log.Println(curTid)
+	pendingId := ID()
+	log.Println(curTid, pendingId)
 	// Start a pending transfer
 	transferRes, err := client.CreateTransfers([]Transfer{
 		{
 			ID:              curTid,
-			DebitAccountID:  ToUint128(101),
-			CreditAccountID: ToUint128(100),
+			DebitAccountID:  sourceAcID,
+			CreditAccountID: destAcID,
 			Amount:          ToUint128(500),
 			Ledger:          1,
 			Code:            1,
-			Flags:           TransferFlags{Pending: false}.ToUint16(),
+			Flags:           TransferFlags{Linked: true}.ToUint16(),
+		},
+		{
+			ID:              ID(),
+			DebitAccountID:  controlAcId,
+			CreditAccountID: operatorAcId,
+			Amount:          limitAmount, // LIMIT
+			Ledger:          uint32(controlLedger),
+			Code:            1,
+			Flags:           TransferFlags{Linked: true}.ToUint16(),
+		},
+		{
+			ID:              pendingId,
+			DebitAccountID:  destAcID,
+			CreditAccountID: controlAcId,
+			Amount:          AmountMax,
+			Ledger:          uint32(controlLedger),
+			Code:            1,
+			Flags: TransferFlags{
+				Linked:         true,
+				BalancingDebit: true,
+				Pending:        true,
+			}.ToUint16(),
+		},
+		{
+			ID:              ID(),
+			DebitAccountID:  ToUint128(0),
+			CreditAccountID: ToUint128(0),
+			Amount:          ToUint128(0),
+			PendingID:       pendingId,
+			Ledger:          uint32(controlLedger),
+			Code:            1,
+			Flags: TransferFlags{
+				Linked:              true,
+				VoidPendingTransfer: true,
+			}.ToUint16(),
+		},
+		{
+			ID:              ID(),
+			DebitAccountID:  operatorAcId,
+			CreditAccountID: controlAcId,
+			Amount:          limitAmount,
+			Ledger:          uint32(controlLedger),
+			Code:            1,
+			Flags:           TransferFlags{Linked: false}.ToUint16(),
 		},
 	})
+	log.Println(transferRes, "<-transferRes")
 	if err != nil {
 		log.Fatalf("Error creating transfer: %s", err)
 	}
@@ -66,31 +142,12 @@ func main() {
 	for _, err := range transferRes {
 		log.Fatalf("Error creating transfer: %s", err.Result)
 	}
-	log.Println(transferRes, "<-transferRes")
 
 	// Validate accounts pending and posted debits/credits before finishing the two-phase transfer
-	accounts, err := client.LookupAccounts([]Uint128{ToUint128(1), ToUint128(2)})
+	accounts, err := client.LookupAccounts([]Uint128{destAcID, sourceAcID})
+	log.Println(accounts, "accounts")
 	if err != nil {
 		log.Fatalf("Could not fetch accounts: %s", err)
-	}
-	assert(len(accounts), 2, "accounts")
-
-	// Create a second transfer simply posting the first transfer
-	transferRes, err = client.CreateTransfers([]Transfer{
-		{
-			ID:              ID(),
-			DebitAccountID:  ToUint128(1),
-			CreditAccountID: ToUint128(2),
-			Amount:          ToUint128(500),
-			PendingID:       curTid,
-			Ledger:          1,
-			Code:            1,
-			Flags:           TransferFlags{PostPendingTransfer: true}.ToUint16(),
-		},
-	})
-	log.Println(transferRes, "post")
-	if err != nil {
-		log.Fatalf("Error creating transfers: %s", err)
 	}
 
 	defer client.Close()
